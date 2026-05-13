@@ -2,9 +2,8 @@
 LiveKit STT Agent — faster-whisper (CPU, бесплатно)
 Транскрибирует каждого участника отдельно и шлёт текст через DataChannel.
 
-Язык определяется автоматически на каждом чанке.
-Принудительная фиксация — только через WHISPER_LANGUAGE=ru (env).
-condition_on_previous_text=False — свободное переключение языков внутри разговора.
+Язык фиксирован на "ru" по умолчанию (WHISPER_LANGUAGE env).
+vad_filter=True — пропускает тихие чанки, не галлюцинирует на тишине.
 """
 
 import asyncio
@@ -28,9 +27,7 @@ logger = logging.getLogger("stt-agent")
 # ── Настройки ──────────────────────────────────────────────────────────────────
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")  # tiny | base | small
 
-# Оставь пустым — Whisper сам определяет язык каждого чанка.
-# Установи "ru"/"en" только если все участники говорят на одном языке.
-FORCE_LANGUAGE = None  # auto-detect per chunk
+FORCE_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "ru")
 
 CHUNK_SECONDS = float(os.getenv("CHUNK_SECONDS", "3"))
 SAMPLE_RATE = 16000
@@ -53,25 +50,27 @@ def transcribe_chunk(audio_data: np.ndarray) -> tuple[str, str | None]:
         return "", None
 
     rms = float(np.sqrt(np.mean(audio_data ** 2)))
+    logger.info(f"chunk rms={rms:.4f} samples={len(audio_data)}")
 
-    # Normalize quiet audio (e.g. mobile with AGC off) to a target RMS
-    # so Whisper VAD can detect speech reliably.
-    TARGET_RMS = 0.05
-    if 0.0001 < rms < TARGET_RMS:
-        audio_data = np.clip(audio_data * (TARGET_RMS / rms), -1.0, 1.0)
-
-    logger.info(f"chunk rms={rms:.4f} → normalized, samples={len(audio_data)}")
+    # Skip near-silent chunks — normalizing quiet noise causes hallucinations
+    if rms < 0.005:
+        return "", None
 
     segments, info = whisper.transcribe(
         audio_data,
         language=FORCE_LANGUAGE,
         beam_size=1,
-        vad_filter=False,  # disabled — audio is pre-normalized, let Whisper decide
+        vad_filter=True,  # skip silent segments within chunk
         condition_on_previous_text=False,
     )
 
     text = " ".join(s.text.strip() for s in segments).strip()
     logger.info(f"whisper → '{text}' lang={info.language}")
+
+    # Skip implausibly short results (single chars/punctuation = hallucination)
+    if len(text) < 3:
+        return "", None
+
     return text, info.language
 
 
