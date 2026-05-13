@@ -57,7 +57,7 @@ def transcribe_chunk(audio_data: np.ndarray) -> tuple[str, str | None]:
         return "", None
 
     # Normalize quiet audio so Whisper can detect speech (mobile needs this)
-    TARGET_RMS = 0.05
+    TARGET_RMS = 0.10
     if rms < TARGET_RMS:
         audio_data = np.clip(audio_data * (TARGET_RMS / rms), -1.0, 1.0)
 
@@ -65,7 +65,7 @@ def transcribe_chunk(audio_data: np.ndarray) -> tuple[str, str | None]:
         audio_data,
         language=FORCE_LANGUAGE,
         beam_size=1,
-        vad_filter=True,  # Whisper's own VAD filters silence after normalization
+        vad_filter=False,  # disabled: audio is already filtered by RMS + language=ru prevents hallucinations
         condition_on_previous_text=False,
     )
 
