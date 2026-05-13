@@ -66,12 +66,7 @@ def transcribe_chunk(audio_data: np.ndarray) -> tuple[str, str | None]:
         audio_data,
         language=FORCE_LANGUAGE,
         beam_size=1,
-        vad_filter=True,
-        vad_parameters=dict(
-            min_silence_duration_ms=100,   # was 300 — less aggressive
-            speech_pad_ms=200,
-            threshold=0.3,                 # was default 0.5 — catches quieter speech
-        ),
+        vad_filter=False,  # disabled — audio is pre-normalized, let Whisper decide
         condition_on_previous_text=False,
     )
 
@@ -202,9 +197,13 @@ async def entrypoint(ctx: JobContext):
             logger.info(f"Остановили транскрипцию для {identity}")
 
     @room.on("data_received")
-    def on_data_received(data: bytes, participant: rtc.RemoteParticipant, *_):
+    def on_data_received(*args):
         try:
-            msg = json.loads(data)
+            # livekit 0.17.x changed signature — accept any args form
+            raw = args[0] if args else b''
+            if not isinstance(raw, (bytes, bytearray)):
+                return
+            msg = json.loads(raw)
             if msg.get("type") == "transcript_request":
                 final = build_final_transcript()
                 all_entries = [e for entries in session_transcript.values() for e in entries]
