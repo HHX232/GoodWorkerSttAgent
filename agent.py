@@ -143,13 +143,29 @@ def build_final_transcript() -> str:
     return "\n".join(lines)
 
 
+def start_transcription(
+    identity: str,
+    track: rtc.Track,
+    participant: rtc.RemoteParticipant,
+    room: rtc.Room,
+    active_streams: dict,
+):
+    if identity in active_streams and not active_streams[identity].done():
+        return
+    logger.info(f"Начинаем транскрипцию для {identity}")
+    task = asyncio.ensure_future(
+        transcribe_participant_audio(rtc.AudioStream(track), participant, room)
+    )
+    active_streams[identity] = task
+
+
 async def entrypoint(ctx: JobContext):
     logger.info(f"Агент подключается к комнате: {ctx.room.name}")
-    await ctx.connect()
 
     room = ctx.room
     active_streams: dict[str, asyncio.Task] = {}
 
+    # Register handlers BEFORE connect so no events are missed
     @room.on("track_subscribed")
     def on_track_subscribed(
         track: rtc.Track,
@@ -158,11 +174,7 @@ async def entrypoint(ctx: JobContext):
     ):
         if track.kind != rtc.TrackKind.KIND_AUDIO:
             return
-        logger.info(f"Новый аудиотрек от {participant.identity}")
-        task = asyncio.ensure_future(
-            transcribe_participant_audio(rtc.AudioStream(track), participant, room)
-        )
-        active_streams[participant.identity] = task
+        start_transcription(participant.identity, track, participant, room, active_streams)
 
     @room.on("track_unsubscribed")
     def on_track_unsubscribed(
@@ -225,6 +237,17 @@ async def entrypoint(ctx: JobContext):
                 reliable=True,
             )
         )
+
+    await ctx.connect()
+    logger.info(f"Агент подключён. Участников в комнате: {len(room.remote_participants)}")
+
+    # Pick up audio tracks that were already published before the agent joined
+    for participant in room.remote_participants.values():
+        for publication in participant.track_publications.values():
+            track = publication.track
+            if track and track.kind == rtc.TrackKind.KIND_AUDIO:
+                logger.info(f"Подписываемся на уже существующий трек от {participant.identity}")
+                start_transcription(participant.identity, track, participant, room, active_streams)
 
     await asyncio.sleep(float("inf"))
 
