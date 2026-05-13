@@ -124,10 +124,13 @@ async def transcribe_participant_audio(
             }
             session_transcript[identity].append(entry)
 
-            await room.local_participant.publish_data(
-                json.dumps({"type": "transcript_chunk", **entry}, ensure_ascii=False).encode(),
-                reliable=True,
-            )
+            try:
+                await room.local_participant.publish_data(
+                    json.dumps({"type": "transcript_chunk", **entry}, ensure_ascii=False).encode(),
+                )
+                logger.info(f"[{identity}] published chunk ok")
+            except Exception as pub_err:
+                logger.error(f"[{identity}] publish_data failed: {pub_err}")
 
 
 def build_final_transcript() -> str:
@@ -202,7 +205,6 @@ async def entrypoint(ctx: JobContext):
                             "transcript": final,
                             "entries": all_entries,
                         }, ensure_ascii=False).encode(),
-                        reliable=True,
                     )
                 )
         except Exception:
@@ -219,7 +221,6 @@ async def entrypoint(ctx: JobContext):
                         "participant": participant.identity,
                         "entries": entries,
                     }, ensure_ascii=False).encode(),
-                    reliable=True,
                 )
             )
 
@@ -234,7 +235,6 @@ async def entrypoint(ctx: JobContext):
                     "transcript": final,
                     "entries": [e for entries in session_transcript.values() for e in entries],
                 }, ensure_ascii=False).encode(),
-                reliable=True,
             )
         )
 
