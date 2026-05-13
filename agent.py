@@ -53,7 +53,14 @@ def transcribe_chunk(audio_data: np.ndarray) -> tuple[str, str | None]:
         return "", None
 
     rms = float(np.sqrt(np.mean(audio_data ** 2)))
-    logger.info(f"chunk rms={rms:.4f} samples={len(audio_data)}")
+
+    # Normalize quiet audio (e.g. mobile with AGC off) to a target RMS
+    # so Whisper VAD can detect speech reliably.
+    TARGET_RMS = 0.05
+    if 0.0001 < rms < TARGET_RMS:
+        audio_data = np.clip(audio_data * (TARGET_RMS / rms), -1.0, 1.0)
+
+    logger.info(f"chunk rms={rms:.4f} → normalized, samples={len(audio_data)}")
 
     segments, info = whisper.transcribe(
         audio_data,
