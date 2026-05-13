@@ -53,7 +53,7 @@ def transcribe_chunk(audio_data: np.ndarray) -> tuple[str, str | None]:
     logger.info(f"chunk rms={rms:.4f} samples={len(audio_data)}")
 
     # Skip absolute silence only — mobile mics capture at very low RMS
-    if rms < 0.0001:
+    if rms < 0.0002:
         return "", None
 
     # Normalize quiet audio so Whisper can detect speech (mobile needs this)
