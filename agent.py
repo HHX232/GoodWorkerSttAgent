@@ -14,7 +14,7 @@ import numpy as np
 from dotenv import load_dotenv
 from faster_whisper import WhisperModel
 from livekit import rtc
-from livekit.agents import JobContext, JobRequest, WorkerOptions, cli
+from livekit.agents import JobContext, WorkerOptions, cli
 
 load_dotenv()
 
@@ -236,15 +236,5 @@ async def entrypoint(ctx: JobContext):
     await asyncio.sleep(float("inf"))
 
 
-async def request_fnc(req: JobRequest):
-    """Принимаем все входящие задачи."""
-    await req.accept(entrypoint)
-
-
 if __name__ == "__main__":
-    cli.run_app(
-        WorkerOptions(
-            request_fnc=request_fnc,
-            # Агент автоматически подключается к каждой новой комнате
-        )
-    )
+    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
