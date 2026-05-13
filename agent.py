@@ -49,24 +49,27 @@ whisper = load_model()
 
 
 def transcribe_chunk(audio_data: np.ndarray) -> tuple[str, str | None]:
-    """
-    Транскрибирует numpy float32 16kHz.
-    language=None  → Whisper определяет язык сам на каждом чанке.
-    condition_on_previous_text=False → не застревает в языке при code-switching.
-    """
     if len(audio_data) < SAMPLE_RATE * 0.3:
         return "", None
+
+    rms = float(np.sqrt(np.mean(audio_data ** 2)))
+    logger.info(f"chunk rms={rms:.4f} samples={len(audio_data)}")
 
     segments, info = whisper.transcribe(
         audio_data,
         language=FORCE_LANGUAGE,
         beam_size=1,
         vad_filter=True,
-        vad_parameters=dict(min_silence_duration_ms=300),
+        vad_parameters=dict(
+            min_silence_duration_ms=100,   # was 300 — less aggressive
+            speech_pad_ms=200,
+            threshold=0.3,                 # was default 0.5 — catches quieter speech
+        ),
         condition_on_previous_text=False,
     )
 
     text = " ".join(s.text.strip() for s in segments).strip()
+    logger.info(f"whisper → '{text}' lang={info.language}")
     return text, info.language
 
 
