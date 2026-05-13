@@ -30,7 +30,7 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "base")  # tiny | base | small
 
 # Оставь пустым — Whisper сам определяет язык каждого чанка.
 # Установи "ru"/"en" только если все участники говорят на одном языке.
-FORCE_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "") or None
+FORCE_LANGUAGE = None  # auto-detect per chunk
 
 CHUNK_SECONDS = float(os.getenv("CHUNK_SECONDS", "3"))
 SAMPLE_RATE = 16000
