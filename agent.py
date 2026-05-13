@@ -52,15 +52,20 @@ def transcribe_chunk(audio_data: np.ndarray) -> tuple[str, str | None]:
     rms = float(np.sqrt(np.mean(audio_data ** 2)))
     logger.info(f"chunk rms={rms:.4f} samples={len(audio_data)}")
 
-    # Skip near-silent chunks — normalizing quiet noise causes hallucinations
-    if rms < 0.005:
+    # Skip absolute silence only — mobile mics capture at very low RMS
+    if rms < 0.0001:
         return "", None
+
+    # Normalize quiet audio so Whisper can detect speech (mobile needs this)
+    TARGET_RMS = 0.05
+    if rms < TARGET_RMS:
+        audio_data = np.clip(audio_data * (TARGET_RMS / rms), -1.0, 1.0)
 
     segments, info = whisper.transcribe(
         audio_data,
         language=FORCE_LANGUAGE,
         beam_size=1,
-        vad_filter=True,  # skip silent segments within chunk
+        vad_filter=True,  # Whisper's own VAD filters silence after normalization
         condition_on_previous_text=False,
     )
 
