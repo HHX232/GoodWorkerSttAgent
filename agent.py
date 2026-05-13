@@ -18,7 +18,7 @@ import numpy as np
 from dotenv import load_dotenv
 from faster_whisper import WhisperModel
 from livekit import rtc
-from livekit.agents import JobContext, WorkerOptions, cli
+from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli
 
 load_dotenv()
 
@@ -238,16 +238,26 @@ async def entrypoint(ctx: JobContext):
             )
         )
 
-    await ctx.connect()
+    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
     logger.info(f"Агент подключён. Участников в комнате: {len(room.remote_participants)}")
 
-    # Pick up audio tracks that were already published before the agent joined
+    # Pick up audio tracks already published before the agent joined.
+    # publication.track is None if not yet subscribed — call set_subscribed(True)
+    # to force subscription; track_subscribed will fire when it arrives.
     for participant in room.remote_participants.values():
         for publication in participant.track_publications.values():
+            if publication.kind != rtc.TrackKind.KIND_AUDIO:
+                continue
             track = publication.track
-            if track and track.kind == rtc.TrackKind.KIND_AUDIO:
-                logger.info(f"Подписываемся на уже существующий трек от {participant.identity}")
+            if track:
+                logger.info(f"Уже подписан на трек от {participant.identity}")
                 start_transcription(participant.identity, track, participant, room, active_streams)
+            else:
+                logger.info(f"Форсируем подписку на трек от {participant.identity}")
+                try:
+                    publication.set_subscribed(True)
+                except Exception as e:
+                    logger.warning(f"set_subscribed failed for {participant.identity}: {e}")
 
     await asyncio.sleep(float("inf"))
 
