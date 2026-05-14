@@ -65,7 +65,7 @@ def transcribe_chunk(audio_data: np.ndarray) -> tuple[str, str | None]:
         audio_data,
         language=FORCE_LANGUAGE,
         beam_size=1,
-        vad_filter=False,  # disabled: audio is already filtered by RMS + language=ru prevents hallucinations
+        vad_filter=True,  # filters background noise; audio normalized to TARGET_RMS so mobile speech passes
         condition_on_previous_text=False,
     )
 
