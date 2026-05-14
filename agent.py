@@ -33,6 +33,7 @@ CHUNK_SECONDS = float(os.getenv("CHUNK_SECONDS", "3"))
 SAMPLE_RATE = 16000
 
 session_transcript: dict[str, list] = defaultdict(list)
+participant_is_mobile: dict[str, bool] = {}
 
 
 def load_model() -> WhisperModel:
@@ -45,7 +46,7 @@ def load_model() -> WhisperModel:
 whisper = load_model()
 
 
-def transcribe_chunk(audio_data: np.ndarray) -> tuple[str, str | None]:
+def transcribe_chunk(audio_data: np.ndarray, use_vad: bool = True) -> tuple[str, str | None]:
     if len(audio_data) < SAMPLE_RATE * 0.3:
         return "", None
 
@@ -65,7 +66,7 @@ def transcribe_chunk(audio_data: np.ndarray) -> tuple[str, str | None]:
         audio_data,
         language=FORCE_LANGUAGE,
         beam_size=1,
-        vad_filter=True,  # filters background noise; audio normalized to TARGET_RMS so mobile speech passes
+        vad_filter=use_vad,  # True for desktop (filters noise), False for mobile (speech too quiet for VAD)
         condition_on_previous_text=False,
     )
 
@@ -83,6 +84,7 @@ async def transcribe_participant_audio(
     audio_stream: rtc.AudioStream,
     participant: rtc.RemoteParticipant,
     room: rtc.Room,
+    use_vad: bool = True,
 ):
     identity = participant.identity
     role = participant.metadata or "participant"
@@ -116,7 +118,7 @@ async def transcribe_participant_audio(
             buffer_samples = 0
 
             text, lang = await asyncio.get_event_loop().run_in_executor(
-                None, transcribe_chunk, chunk
+                None, transcribe_chunk, chunk, use_vad
             )
 
             if not text:
@@ -164,9 +166,11 @@ def start_transcription(
 ):
     if identity in active_streams and not active_streams[identity].done():
         return
-    logger.info(f"Начинаем транскрипцию для {identity}")
+    is_mobile = participant_is_mobile.get(identity, False)
+    use_vad = not is_mobile
+    logger.info(f"Начинаем транскрипцию для {identity} (mobile={is_mobile}, vad={use_vad})")
     task = asyncio.ensure_future(
-        transcribe_participant_audio(rtc.AudioStream(track), participant, room)
+        transcribe_participant_audio(rtc.AudioStream(track), participant, room, use_vad=use_vad)
     )
     active_streams[identity] = task
 
@@ -208,6 +212,12 @@ async def entrypoint(ctx: JobContext):
             if not isinstance(raw, (bytes, bytearray)):
                 return
             msg = json.loads(raw)
+            if msg.get("type") == "client_info":
+                identity = msg.get("identity", "")
+                is_mobile = bool(msg.get("isMobile", False))
+                participant_is_mobile[identity] = is_mobile
+                logger.info(f"client_info: {identity} isMobile={is_mobile}")
+                return
             if msg.get("type") == "transcript_request":
                 final = build_final_transcript()
                 all_entries = [e for entries in session_transcript.values() for e in entries]
