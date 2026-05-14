@@ -215,8 +215,22 @@ async def entrypoint(ctx: JobContext):
             if msg.get("type") == "client_info":
                 identity = msg.get("identity", "")
                 is_mobile = bool(msg.get("isMobile", False))
+                prev_mobile = participant_is_mobile.get(identity)
                 participant_is_mobile[identity] = is_mobile
                 logger.info(f"client_info: {identity} isMobile={is_mobile}")
+                # Restart transcription if the VAD mode needs to change for an active stream
+                if prev_mobile != is_mobile and identity in active_streams:
+                    task = active_streams.get(identity)
+                    if task and not task.done():
+                        participant = room.remote_participants.get(identity)
+                        if participant:
+                            for pub in participant.track_publications.values():
+                                if pub.kind == rtc.TrackKind.KIND_AUDIO and pub.track:
+                                    logger.info(f"Restarting transcription for {identity} (mobile={is_mobile})")
+                                    task.cancel()
+                                    del active_streams[identity]
+                                    start_transcription(identity, pub.track, participant, room, active_streams)
+                                    break
                 return
             if msg.get("type") == "transcript_request":
                 final = build_final_transcript()
