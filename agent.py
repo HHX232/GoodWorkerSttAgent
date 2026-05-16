@@ -84,7 +84,6 @@ async def transcribe_participant_audio(
     audio_stream: rtc.AudioStream,
     participant: rtc.RemoteParticipant,
     room: rtc.Room,
-    use_vad: bool = True,
 ):
     identity = participant.identity
     role = participant.metadata or "participant"
@@ -117,8 +116,10 @@ async def transcribe_participant_audio(
             buffer = []
             buffer_samples = 0
 
+            # Read isMobile at chunk time so client_info updates take effect without restarting the stream
+            is_mobile = participant_is_mobile.get(identity, False)
             text, lang = await asyncio.get_event_loop().run_in_executor(
-                None, transcribe_chunk, chunk, use_vad
+                None, transcribe_chunk, chunk, not is_mobile
             )
 
             if not text:
@@ -166,11 +167,9 @@ def start_transcription(
 ):
     if identity in active_streams and not active_streams[identity].done():
         return
-    is_mobile = participant_is_mobile.get(identity, False)
-    use_vad = not is_mobile
-    logger.info(f"Начинаем транскрипцию для {identity} (mobile={is_mobile}, vad={use_vad})")
+    logger.info(f"Начинаем транскрипцию для {identity}")
     task = asyncio.ensure_future(
-        transcribe_participant_audio(rtc.AudioStream(track), participant, room, use_vad=use_vad)
+        transcribe_participant_audio(rtc.AudioStream(track), participant, room)
     )
     active_streams[identity] = task
 
@@ -215,22 +214,8 @@ async def entrypoint(ctx: JobContext):
             if msg.get("type") == "client_info":
                 identity = msg.get("identity", "")
                 is_mobile = bool(msg.get("isMobile", False))
-                prev_mobile = participant_is_mobile.get(identity)
                 participant_is_mobile[identity] = is_mobile
                 logger.info(f"client_info: {identity} isMobile={is_mobile}")
-                # Restart transcription if the VAD mode needs to change for an active stream
-                if prev_mobile != is_mobile and identity in active_streams:
-                    task = active_streams.get(identity)
-                    if task and not task.done():
-                        participant = room.remote_participants.get(identity)
-                        if participant:
-                            for pub in participant.track_publications.values():
-                                if pub.kind == rtc.TrackKind.KIND_AUDIO and pub.track:
-                                    logger.info(f"Restarting transcription for {identity} (mobile={is_mobile})")
-                                    task.cancel()
-                                    del active_streams[identity]
-                                    start_transcription(identity, pub.track, participant, room, active_streams)
-                                    break
                 return
             if msg.get("type") == "transcript_request":
                 final = build_final_transcript()
