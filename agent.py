@@ -35,6 +35,9 @@ SAMPLE_RATE = 16000
 session_transcript: dict[str, list] = defaultdict(list)
 participant_is_mobile: dict[str, bool] = {}
 
+QUIET_RMS_THRESHOLD = 0.03
+TARGET_RMS = 0.10
+
 
 def load_model() -> WhisperModel:
     logger.info(f"Загружаем Whisper модель '{WHISPER_MODEL}' (CPU)...")
@@ -46,37 +49,41 @@ def load_model() -> WhisperModel:
 whisper = load_model()
 
 
-def transcribe_chunk(audio_data: np.ndarray, use_vad: bool = True) -> tuple[str, str | None]:
+def transcribe_chunk(audio_data: np.ndarray, is_mobile: bool = False) -> tuple[str, str | None]:
     if len(audio_data) < SAMPLE_RATE * 0.3:
         return "", None
 
     rms = float(np.sqrt(np.mean(audio_data ** 2)))
-    logger.info(f"chunk rms={rms:.4f} samples={len(audio_data)}")
 
-    # Skip absolute silence only — mobile mics capture at very low RMS
     if rms < 0.0002:
+        logger.info(f"chunk skipped (silence) rms={rms:.5f} mobile={is_mobile}")
         return "", None
 
-    # Normalize quiet audio so Whisper can detect speech (mobile needs this)
-    TARGET_RMS = 0.10
+    is_quiet_mic = rms < QUIET_RMS_THRESHOLD
+
     if rms < TARGET_RMS:
         audio_data = np.clip(audio_data * (TARGET_RMS / rms), -1.0, 1.0)
 
-    segments, info = whisper.transcribe(
-        audio_data,
+    use_vad = not (is_mobile or is_quiet_mic)
+    logger.info(f"chunk rms={rms:.5f} mobile={is_mobile} quiet_mic={is_quiet_mic} vad={use_vad}")
+
+    transcribe_kwargs: dict = dict(
         language=FORCE_LANGUAGE,
         beam_size=1,
-        vad_filter=use_vad,  # True for desktop (filters noise), False for mobile (speech too quiet for VAD)
+        vad_filter=use_vad,
         condition_on_previous_text=False,
     )
+    if use_vad:
+        transcribe_kwargs["vad_parameters"] = dict(min_silence_duration_ms=300)
+
+    segments, info = whisper.transcribe(audio_data, **transcribe_kwargs)
 
     text = " ".join(s.text.strip() for s in segments).strip()
-    logger.info(f"whisper → '{text}' lang={info.language}")
-
-    # Skip implausibly short results (single chars/punctuation = hallucination)
     if len(text) < 3:
+        logger.info(f"chunk filtered (too short): '{text}'")
         return "", None
 
+    logger.info(f"whisper → '{text}' lang={info.language}")
     return text, info.language
 
 
@@ -119,7 +126,7 @@ async def transcribe_participant_audio(
             # Read isMobile at chunk time so client_info updates take effect without restarting the stream
             is_mobile = participant_is_mobile.get(identity, False)
             text, lang = await asyncio.get_event_loop().run_in_executor(
-                None, transcribe_chunk, chunk, not is_mobile
+                None, transcribe_chunk, chunk, is_mobile
             )
 
             if not text:
@@ -206,8 +213,9 @@ async def entrypoint(ctx: JobContext):
     @room.on("data_received")
     def on_data_received(*args):
         try:
-            # livekit 0.17.x changed signature — accept any args form
-            raw = args[0] if args else b''
+            raw = args[0] if args else b""
+            if hasattr(raw, "data"):
+                raw = raw.data
             if not isinstance(raw, (bytes, bytearray)):
                 return
             msg = json.loads(raw)
