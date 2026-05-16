@@ -35,7 +35,6 @@ SAMPLE_RATE = 16000
 session_transcript: dict[str, list] = defaultdict(list)
 participant_is_mobile: dict[str, bool] = {}
 
-QUIET_RMS_THRESHOLD = 0.03
 TARGET_RMS = 0.10
 
 
@@ -59,13 +58,11 @@ def transcribe_chunk(audio_data: np.ndarray, is_mobile: bool = False) -> tuple[s
         logger.info(f"chunk skipped (silence) rms={rms:.5f} mobile={is_mobile}")
         return "", None
 
-    is_quiet_mic = rms < QUIET_RMS_THRESHOLD
-
     if rms < TARGET_RMS:
         audio_data = np.clip(audio_data * (TARGET_RMS / rms), -1.0, 1.0)
 
-    use_vad = not (is_mobile or is_quiet_mic)
-    logger.info(f"chunk rms={rms:.5f} mobile={is_mobile} quiet_mic={is_quiet_mic} vad={use_vad}")
+    use_vad = not is_mobile
+    logger.info(f"chunk rms={rms:.5f} mobile={is_mobile} vad={use_vad}")
 
     transcribe_kwargs: dict = dict(
         language=FORCE_LANGUAGE,
