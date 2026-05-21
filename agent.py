@@ -96,57 +96,80 @@ async def transcribe_participant_audio(
     buffer: list[np.ndarray] = []
     buffer_samples = 0
     target_samples = int(SAMPLE_RATE * CHUNK_SECONDS)
+    frames_received = 0
 
-    async for event in audio_stream:
-        frame = event.frame
-
-        pcm_int16 = np.frombuffer(frame.data, dtype=np.int16)
-        pcm_float32 = pcm_int16.astype(np.float32) / 32768.0
-
-        if frame.sample_rate != SAMPLE_RATE:
-            ratio = SAMPLE_RATE / frame.sample_rate
-            new_len = int(len(pcm_float32) * ratio)
-            pcm_float32 = np.interp(
-                np.linspace(0, len(pcm_float32), new_len),
-                np.arange(len(pcm_float32)),
-                pcm_float32,
-            )
-
-        buffer.append(pcm_float32)
-        buffer_samples += len(pcm_float32)
-
-        if buffer_samples >= target_samples:
-            chunk = np.concatenate(buffer)
-            buffer = []
-            buffer_samples = 0
-
-            # Read isMobile at chunk time so client_info updates take effect without restarting the stream
-            is_mobile = participant_is_mobile.get(identity, False)
-            text, lang = await asyncio.get_event_loop().run_in_executor(
-                None, transcribe_chunk, chunk, is_mobile
-            )
-
-            if not text:
-                continue
-
-            logger.info(f"[{identity}] ({lang}): {text}")
-
-            entry = {
-                "time": datetime.now().strftime("%H:%M:%S"),
-                "participant": identity,
-                "role": role,
-                "text": text,
-                "lang": lang,
-            }
-            session_transcript[identity].append(entry)
-
+    try:
+        async for event in audio_stream:
             try:
-                await room.local_participant.publish_data(
-                    json.dumps({"type": "transcript_chunk", **entry}, ensure_ascii=False).encode(),
-                )
-                logger.info(f"[{identity}] published chunk ok")
-            except Exception as pub_err:
-                logger.error(f"[{identity}] publish_data failed: {pub_err}")
+                frame = event.frame
+
+                raw = bytes(frame.data)
+                if len(raw) % 2 != 0:
+                    raw = raw[: len(raw) - 1]
+                pcm_int16 = np.frombuffer(raw, dtype=np.int16)
+                if frame.num_channels > 1:
+                    pcm_int16 = pcm_int16[::frame.num_channels]
+                pcm_float32 = pcm_int16.astype(np.float32) / 32768.0
+
+                if frame.sample_rate and frame.sample_rate != SAMPLE_RATE:
+                    ratio = SAMPLE_RATE / frame.sample_rate
+                    new_len = int(len(pcm_float32) * ratio)
+                    if new_len > 0:
+                        pcm_float32 = np.interp(
+                            np.linspace(0, len(pcm_float32) - 1, new_len),
+                            np.arange(len(pcm_float32)),
+                            pcm_float32,
+                        )
+
+                if len(pcm_float32) == 0:
+                    continue
+
+                buffer.append(pcm_float32)
+                buffer_samples += len(pcm_float32)
+                frames_received += 1
+
+                if buffer_samples >= target_samples:
+                    chunk = np.concatenate(buffer)
+                    buffer = []
+                    buffer_samples = 0
+
+                    # Read isMobile at chunk time so client_info updates take effect without restarting the stream
+                    is_mobile = participant_is_mobile.get(identity, False)
+                    logger.info(f"[{identity}] chunk ready: frames={frames_received} samples={len(chunk)} is_mobile={is_mobile}")
+                    text, lang = await asyncio.get_event_loop().run_in_executor(
+                        None, transcribe_chunk, chunk, is_mobile
+                    )
+
+                    if not text:
+                        continue
+
+                    logger.info(f"[{identity}] ({lang}): {text}")
+
+                    entry = {
+                        "time": datetime.now().strftime("%H:%M:%S"),
+                        "participant": identity,
+                        "role": role,
+                        "text": text,
+                        "lang": lang,
+                    }
+                    session_transcript[identity].append(entry)
+
+                    try:
+                        await room.local_participant.publish_data(
+                            json.dumps({"type": "transcript_chunk", **entry}, ensure_ascii=False).encode(),
+                        )
+                        logger.info(f"[{identity}] published chunk ok")
+                    except Exception as pub_err:
+                        logger.error(f"[{identity}] publish_data failed: {pub_err}")
+
+            except Exception as frame_err:
+                logger.error(f"[{identity}] frame processing error: {frame_err}", exc_info=True)
+
+    except asyncio.CancelledError:
+        logger.info(f"[{identity}] transcription cancelled (frames_received={frames_received})")
+        raise
+    except Exception as fatal_err:
+        logger.error(f"[{identity}] transcription task CRASHED (frames_received={frames_received}): {fatal_err}", exc_info=True)
 
 
 def build_final_transcript() -> str:
@@ -175,6 +198,12 @@ def start_transcription(
     task = asyncio.ensure_future(
         transcribe_participant_audio(rtc.AudioStream(track), participant, room)
     )
+
+    def _on_done(t: asyncio.Task) -> None:
+        if not t.cancelled() and t.exception():
+            logger.error(f"[{identity}] transcription task ended with exception: {t.exception()}")
+
+    task.add_done_callback(_on_done)
     active_streams[identity] = task
 
 
