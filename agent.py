@@ -37,6 +37,14 @@ participant_is_mobile: dict[str, bool] = {}
 
 TARGET_RMS = 0.10
 
+# Минимальный RMS чтобы чанк вообще попал в Whisper.
+# На десктопе VAD сам фильтрует тишину, но пропускает тихий фон/музыку —
+# на таких чанках Whisper галлюцинирует ("СПОКОЙНАЯ МУЗЫКА", "СМЕХ" и т.п.),
+# поэтому порог держим заметно выше нуля, а не полагаемся только на VAD.
+# На мобилке — ещё выше, чтобы отсекать дальний фоновый шум без VAD.
+SILENCE_THRESHOLD_DESKTOP = float(os.getenv("DESKTOP_SILENCE_THRESHOLD", "0.012"))
+SILENCE_THRESHOLD_MOBILE  = float(os.getenv("MOBILE_SILENCE_THRESHOLD", "0.090"))
+
 
 def load_model() -> WhisperModel:
     logger.info(f"Загружаем Whisper модель '{WHISPER_MODEL}' (CPU)...")
@@ -54,8 +62,9 @@ def transcribe_chunk(audio_data: np.ndarray, is_mobile: bool = False) -> tuple[s
 
     rms = float(np.sqrt(np.mean(audio_data ** 2)))
 
-    if rms < 0.0002:
-        logger.info(f"chunk skipped (silence) rms={rms:.5f} mobile={is_mobile}")
+    silence_threshold = SILENCE_THRESHOLD_MOBILE if is_mobile else SILENCE_THRESHOLD_DESKTOP
+    if rms < silence_threshold:
+        logger.info(f"chunk skipped (below threshold) rms={rms:.5f} threshold={silence_threshold:.5f} mobile={is_mobile}")
         return "", None
 
     if rms < TARGET_RMS:
@@ -66,7 +75,7 @@ def transcribe_chunk(audio_data: np.ndarray, is_mobile: bool = False) -> tuple[s
 
     transcribe_kwargs: dict = dict(
         language=FORCE_LANGUAGE,
-        beam_size=1,
+        beam_size=5 if is_mobile else 1,
         vad_filter=use_vad,
         condition_on_previous_text=False,
     )
