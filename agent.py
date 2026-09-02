@@ -32,6 +32,19 @@ FORCE_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "ru")
 CHUNK_SECONDS = float(os.getenv("CHUNK_SECONDS", "3"))
 SAMPLE_RATE = 16000
 
+# num_idle_processes=3 (либкитовский дефолт) держит 3 всегда прогретых процесса,
+# и каждый грузит свою копию Whisper при импорте (см. load_model() ниже) — это и есть
+# базовая память в простое. Меньше = меньше RAM в простое, но чуть медленнее первый
+# ответ на новый звонок (модель грузится с нуля).
+NUM_IDLE_PROCESSES = int(os.getenv("NUM_IDLE_PROCESSES", "1"))
+
+# load_threshold=0.65 (либкитовский дефолт) — доля CPU всей машины (psutil.cpu_percent,
+# скользящее среднее ~2.5с), выше которой воркер помечает себя "at full capacity" и
+# перестаёт брать новые комнаты. На слабом CPU каждый chunk инференса Whisper коротко
+# продавливает этот порог → лог мигает full/available каждые несколько секунд.
+# Подняли, чтобы воркер не флапал на кратковременных всплесках.
+LOAD_THRESHOLD = float(os.getenv("LOAD_THRESHOLD", "0.85"))
+
 session_transcript: dict[str, list] = defaultdict(list)
 participant_is_mobile: dict[str, bool] = {}
 
@@ -73,9 +86,12 @@ def transcribe_chunk(audio_data: np.ndarray, is_mobile: bool = False) -> tuple[s
     use_vad = not is_mobile
     logger.info(f"chunk rms={rms:.5f} mobile={is_mobile} vad={use_vad}")
 
+    # beam_size=5 на мобилке (вместо 1 на десктопе, где есть VAD) — оправдано точностью
+    # без VAD-фильтра, но в 5 раз дороже по CPU; это и раздувает пики нагрузки, которые
+    # продавливают load_threshold. Держим компромисс — 2 вместо 5.
     transcribe_kwargs: dict = dict(
         language=FORCE_LANGUAGE,
-        beam_size=5 if is_mobile else 1,
+        beam_size=2 if is_mobile else 1,
         vad_filter=use_vad,
         condition_on_previous_text=False,
     )
@@ -328,4 +344,8 @@ async def entrypoint(ctx: JobContext):
 
 
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    cli.run_app(WorkerOptions(
+        entrypoint_fnc=entrypoint,
+        num_idle_processes=NUM_IDLE_PROCESSES,
+        load_threshold=LOAD_THRESHOLD,
+    ))
